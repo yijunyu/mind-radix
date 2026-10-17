@@ -1,0 +1,24 @@
+[Unit]
+# Router for this host: prefers the backend most likely to hold a prompt's prefix.
+# Runs in the user manager so it can read the API key and radix CLI from $HOME.
+Description=Local Mind prefix-aware router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+# MIND_STUDIO points at the other host's router, which fronts its own backend;
+# MIND_AMD is this host's local backend.
+Environment=MIND_ROUTER_HOST=0.0.0.0
+Environment=MIND_ROUTER_PORT=8015
+Environment=MIND_STUDIO=http://192.168.1.92:8015
+Environment=MIND_AMD=http://127.0.0.1:8000
+Environment=MIND_RADIX_BIN=%h/mind-radix-cli
+EnvironmentFile=-%h/.local/state/ds4-local/mind-router.env
+ExecStart=/usr/bin/python3 %h/mind-router.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

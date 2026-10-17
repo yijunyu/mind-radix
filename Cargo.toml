@@ -1,0 +1,14 @@
+[package]
+name = "mind-radix"
+version = "0.1.0"
+edition = "2024"
+description = "Router-side prefix index for llama.cpp/ggml servers: vLLM-style chained block hashes plus a radix tree, so a request can be sent to the backend that most likely still holds its prefix."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Hashing only. The index is deliberately dependency-free otherwise: it holds no
+# engine bindings and talks to no transport, so it can sit in front of llama.cpp,
+# PolyStrata, or anything else that caches prompt prefixes by longest-common-prefix.
+sha2 = "0.10"
+
+[dev-dependencies]
