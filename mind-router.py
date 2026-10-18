@@ -69,12 +69,21 @@ BACKENDS = [
     {"name": "studio",
      "base": os.environ.get("MIND_STUDIO", "http://127.0.0.1:8016"),
      "key": os.environ.get("MIND_STUDIO_KEY", "").strip()},
+    {"name": "mac",
+     # The MacBook Pro lives off-LAN and its llama-server binds its own loopback, so it
+     # is reached through an SSH forward that studio keeps open (8091 -> mac:8090).
+     # Setting MIND_MAC empty removes it, which is what a host without that forward
+     # should do -- a backend that is configured but unreachable just fails its probe.
+     "base": os.environ.get("MIND_MAC", "http://127.0.0.1:8091"),
+     "key": os.environ.get("MIND_MAC_KEY", "").strip()},
     {"name": "amd",
      "base": os.environ.get("MIND_AMD", "http://192.168.1.123:8000"),
      # Default to the shared key only when talking to a remote/LAN backend; a
      # loopback backend on a host that does not key it simply ignores the header.
      "key": os.environ.get("MIND_AMD_KEY", "").strip() or AUTH_KEY},
 ]
+# An empty MIND_<NAME> drops that backend, so the same file can serve every host.
+BACKENDS = [b for b in BACKENDS if b["base"]]
 
 # Optional prefix index (crates/mind-radix). When present it lets the router rank
 # backends by how much of an incoming prompt each one is *likely* to hold, which is
@@ -169,7 +178,8 @@ def probe(backend: dict) -> bool:
     try:
         # The URL is built from this process's own configuration, never from a client
         # request, so the scheme is ours to trust (noqa: the audit assumes user input).
-        req = urllib.request.Request(backend["base"] + "/v1/models", headers=headers_for(backend))
+        req = urllib.request.Request(backend["base"] + "/v1/models",  # noqa: S310
+                                     headers=headers_for(backend))
         with urllib.request.urlopen(req, timeout=4) as resp:  # noqa: S310
             ok = 200 <= resp.status < 300
     except Exception:
@@ -388,7 +398,7 @@ class Handler(BaseHTTPRequestHandler):
         def attempt(target: dict):
             # Again: scheme and host come from our configuration; only the path is the
             # client's, and it is passed through to the backend, not resolved here.
-            req = urllib.request.Request(
+            req = urllib.request.Request(  # noqa: S310
                 target["base"] + self.path, data=raw, method=method,
                 headers=headers_for(target, {"Content-Type": ctype}))
             return urllib.request.urlopen(req, timeout=TIMEOUT)  # noqa: S310
@@ -462,6 +472,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"[mind-router] {HOST}:{PORT} studio={BACKENDS[0]['base']} amd={BACKENDS[1]['base']} "
-          f"auth={'on' if AUTH_KEY else 'off'} prefer={preferred} affinity_ttl={AFFINITY_TTL:.0f}s", flush=True)
+    print("[mind-router] " + f"{HOST}:{PORT} "
+          + " ".join(f"{b['name']}={b['base']}" for b in BACKENDS)
+          + f" auth={'on' if AUTH_KEY else 'off'} prefer={preferred} affinity_ttl={AFFINITY_TTL:.0f}s", flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
