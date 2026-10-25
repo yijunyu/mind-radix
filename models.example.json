@@ -1,0 +1,99 @@
+{
+  "_about": [
+    "Registry for mind-arbiter.py. Copy to ~/.config/mind/models.json and edit.",
+    "Never put an API key here: name where it lives with key_env / key_env_file.",
+    "weight_gib is what the model needs resident, including KV and, for a streaming",
+    "model, its expert cache. The arbiter evicts others only until that much is free,",
+    "so an honest number here is what keeps a swap from OOMing the box.",
+    "First non-opt_in entry is the default when a request names no model."
+  ],
+
+  "models": [
+    {
+      "id": "minicpm-v4.7",
+      "aliases": ["minicpm", "minicpm-v4.7-35b-a3b-q4km"],
+      "engine": "llama.cpp",
+      "launcher": "systemd",
+      "unit": "ds4-minicpm-vulkan.service",
+      "base": "http://127.0.0.1:8000",
+      "key_env": "DS4_LAN_API_KEY",
+      "key_env_file": "~/.local/state/ds4-local/lan-service.env",
+      "weight_gib": 35,
+      "ready_timeout_s": 300,
+      "slots": 0,
+      "_slots_note": [
+        "Set slots to the server's --parallel count to persist prompt caches across",
+        "a swap. It requires llama-server to be started with --slot-save-path DIR;",
+        "without that flag /slots/{id}?action=save answers with an error, so this is",
+        "left at 0 and save_kv reports 'unsupported' rather than failing every swap."
+      ]
+    },
+
+    {
+      "id": "deepseek-v4.1-flash",
+      "aliases": ["v41", "ds41"],
+      "engine": "ds4",
+      "launcher": "exec",
+      "argv": [
+        "/data/ds4-v41/ds4-server",
+        "--rocm", "-m", "/data/gguf/DeepSeek-V4.1-Flash-Q2.gguf",
+        "--ssd-streaming", "--ssd-streaming-cache-experts", "76GB",
+        "--ctx", "20480", "-t", "16",
+        "--host", "127.0.0.1", "--port", "8001",
+        "--kv-disk-dir", "/data/kvcache/v41", "--kv-disk-space-mb", "8192"
+      ],
+      "base": "http://127.0.0.1:8001",
+      "log": "/data/kvcache/v41-server.log",
+      "weight_gib": 88,
+      "ready_timeout_s": 2400,
+      "opt_in": true,
+      "_note": [
+        "opt_in keeps it out of the default route: a cold start reads 70-123 GiB to",
+        "warm its expert cache, which no KV persistence can save. Points at the kyuz0",
+        "fork build because mainline ROCm prefill measured 0.90 t/s against the",
+        "fork's 22.05 t/s; see speed-bench/deepseek-v4.1-flash-gfx1151.md in ds4.",
+        "That fork build is missing two ROCm correctness fixes (f3ee00a, 5c3b0a4).",
+        "weight_gib 88 matches the 76GB expert cache above, not auto sizing, which",
+        "planned 100.97 GiB -- more than a sweep watchdog once killed on this box."
+      ]
+    },
+
+    {
+      "id": "qwen3.8-flash-next",
+      "aliases": ["qwen38"],
+      "engine": "ds4",
+      "launcher": "exec",
+      "argv": [
+        "/home/yijun/vision-rocm/ds4/ds4-server",
+        "--rocm", "-m", "/data/gguf/Qwen3.8-Flash-Next-Q2.gguf",
+        "--ssd-streaming", "--ctx", "4096", "-t", "16",
+        "--host", "127.0.0.1", "--port", "8002",
+        "--kv-disk-dir", "/data/kvcache/qwen38", "--kv-disk-space-mb", "8192"
+      ],
+      "base": "http://127.0.0.1:8002",
+      "log": "/data/kvcache/qwen38-server.log",
+      "weight_gib": 90,
+      "ready_timeout_s": 2400,
+      "opt_in": true,
+      "_note": [
+        "UNTESTED on this box. The 137 GiB file cannot be resident in a ~122 GiB",
+        "pool, so it streams; weight_gib is a guess until measured. Left out of the",
+        "live registry until someone runs it."
+      ]
+    },
+
+    {
+      "id": "studio-router",
+      "engine": "llama.cpp",
+      "external": true,
+      "base": "http://192.168.1.92:8015",
+      "key_env": "MIND_ROUTER_KEY",
+      "weight_gib": 0,
+      "_note": [
+        "external means the arbiter never starts or stops it and never counts it",
+        "against local memory -- another host owns its lifecycle. Useful so one",
+        "endpoint can offer both local models and a remote host's."
+      ]
+    }
+  ]
+}

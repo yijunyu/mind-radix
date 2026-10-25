@@ -52,6 +52,62 @@ Binds the LAN by default and **requires an API key**, so an open router is never
 mistaken for an open model. If the index binary is missing or dies, routing degrades to
 affinity alone — the index improves routing and is never required for it.
 
+## Choosing a model, not just a host: `mind-arbiter.py`
+
+The router answers *which host*, because every host serves the same model. The
+arbiter answers *which model this host is currently holding*, which is a different
+problem with a harder constraint: on a unified-memory box the models do not fit
+together. Measured on the gfx1151 box (~122 GiB usable):
+
+| Model | Resident need |
+| --- | --- |
+| MiniCPM-V 4.7 Q4_K_M | ~35 GB at 131072 ctx |
+| Qwen3.8-Flash-Next Q2 | 137 GiB file, SSD-streamed |
+| DeepSeek V4.1 Flash Q2 | ~88 GiB at a 76 GB expert cache (auto sizing plans 101) |
+
+So MiniCPM and V4.1 can never be co-resident. The arbiter puts one OpenAI-compatible
+endpoint in front of all of them and swaps on demand:
+
+* **it swaps only at zero in-flight requests.** A model being evicted is drained
+  first, and a drain that does not finish inside `MIND_ARBITER_DRAIN_WAIT` abandons
+  the swap rather than the request — a client gets `503` with `Retry-After`, never a
+  killed generation;
+* **it evicts only as much as it must.** Eviction stops as soon as `MemAvailable`
+  minus a reserve covers the incoming model's `weight_gib`, so models that genuinely
+  fit together stay up;
+* **it keeps per-model prompt caches across a swap.** `ds4-server` persists KV on a
+  policy with `--kv-disk-dir`; `llama-server` needs `--slot-save-path` plus explicit
+  `/slots/{id}?action=save|restore`, which the arbiter calls around the swap;
+* **it advertises unloaded models.** `GET /v1/models` lists the whole registry with a
+  `loaded` flag, so a client can see its choices while nothing is serving and pick
+  one; asking for an unloaded model loads it.
+
+Every reply carries `x-mind-model` and `x-mind-arbiter` (`resident`, `loaded`,
+`loaded-evicted:<id>(<kv>)`, …), so a slow first request is explainable.
+
+Composition is the point: set `MIND_AMD=http://127.0.0.1:8010` and the router needs
+no change at all — it keeps ranking hosts by prefix, and the host it picks now
+happens to offer a choice of models.
+
+```bash
+cp models.example.json ~/.config/mind/models.json   # then edit; never put a key in it
+python3 mind-arbiter.py
+
+curl -H "Authorization: Bearer $KEY" localhost:8010/v1/models        # choices
+curl -H "Authorization: Bearer $KEY" localhost:8010/arbiter/status   # residency + headroom
+curl -XPOST -H "Authorization: Bearer $KEY" localhost:8010/arbiter/load/v41
+curl -XPOST -H "Authorization: Bearer $KEY" localhost:8010/arbiter/pin/minicpm   # refuse eviction
+```
+
+Measured here: unload MiniCPM, then one chat request reloaded it and answered in
+**4.19 s** end to end, reporting `x-mind-arbiter: loaded`.
+
+What it cannot do is make a swap instant. Three things must come back and only two
+can be saved: KV state persists to disk, weights reload in seconds and not reliably
+from page cache (a streaming model reads enough to evict it), and an SSD-streaming
+expert cache is in-process RAM that is simply lost — for V4.1 that measured 70–123
+GiB of re-reads. Mark such a model `opt_in` so it stays out of casual routing.
+
 ## Layout
 
 | Path | What |
@@ -59,8 +115,11 @@ affinity alone — the index improves routing and is never required for it.
 | `src/lib.rs` | hashing + radix tree + estimates |
 | `src/bin/mind-radix-cli.rs` | line-oriented JSON CLI, so the router needs no binding layer |
 | `mind-router.py` | the router (stdlib only, Python 3.9+) |
+| `mind-arbiter.py` | local model arbitration and swapping (stdlib only) |
+| `models.example.json` | arbiter registry template |
 | `mind-router.sh` | start/stop/status helper |
 | `systemd/mind-router.service` | Linux user unit |
+| `systemd/mind-arbiter.service` | Linux user unit for the arbiter |
 
 ## Use
 
@@ -90,6 +149,14 @@ local instead of always crossing the network to a router that cannot see it.
   is enough to decide whether two requests share an opening; it is an approximation of
   the engine's own prefix matching, not a replacement.
 * A backend restart loses its cache; call `forget_backend` or `POST /router/session/clear`.
+  An arbiter swap *is* such a restart as far as the router can tell, and the arbiter
+  does not yet notify it — so with both running, a model swap leaves the router's
+  index briefly optimistic about that backend. The index only corrects estimates
+  downward from measurement, so this self-heals after a turn or two; wiring the
+  arbiter to call `forget_backend` on a swap is the clean fix and is not done yet.
+  A related subtlety: the index keys on message text and not on the model, so two
+  models behind one backend name share estimates. Affinity is unaffected — a
+  conversation key already includes `model`.
 * No engine-side event stream exists for llama.cpp, so estimates are built from prompts
   the router sent. Precise routing would need llama.cpp to emit KV events; the hash
   chain here is the prerequisite for that and is already written.
