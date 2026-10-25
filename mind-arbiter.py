@@ -294,7 +294,7 @@ class Model:
         return self._slots("restore")
 
     def _slots(self, action: str) -> str:
-        done, failed = 0, 0
+        done, cold, failed = 0, 0, 0
         for slot in range(self.slots):
             body = json.dumps({"filename": f"{self.id}-slot{slot}.bin"}).encode()
             try:
@@ -304,9 +304,24 @@ class Model:
                     headers=self.headers({"Content-Type": "application/json"}))
                 with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310
                     done += 1 if 200 <= resp.status < 300 else 0
+            except urllib.error.HTTPError as exc:
+                # Restoring a slot that was never saved is the ordinary first case, and
+                # llama-server reports it as 400 with the same message it uses for a
+                # corrupt file ("No available space in KV cache or invalid slot save
+                # file"). Counting that as a failure would make every first swap-in
+                # look broken, so a restore that finds nothing is reported as cold.
+                if action == "restore" and exc.code == 400:
+                    cold += 1
+                else:
+                    failed += 1
             except Exception:
                 failed += 1
-        return f"{action} {done}/{self.slots} ok" + (f", {failed} failed" if failed else "")
+        parts = [f"{action} {done}/{self.slots} ok"]
+        if cold:
+            parts.append(f"{cold} cold")
+        if failed:
+            parts.append(f"{failed} failed")
+        return ", ".join(parts)
 
 
 def _load_registry(path: str) -> list:

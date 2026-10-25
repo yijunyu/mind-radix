@@ -20,12 +20,19 @@
       "key_env_file": "~/.local/state/ds4-local/lan-service.env",
       "weight_gib": 35,
       "ready_timeout_s": 300,
-      "slots": 0,
+      "slots": 4,
       "_slots_note": [
-        "Set slots to the server's --parallel count to persist prompt caches across",
-        "a swap. It requires llama-server to be started with --slot-save-path DIR;",
-        "without that flag /slots/{id}?action=save answers with an error, so this is",
-        "left at 0 and save_kv reports 'unsupported' rather than failing every swap."
+        "slots is the server's slot count -- /props reports it as total_slots, and it",
+        "is NOT 1 by default: --parallel defaults to auto, which chose 4 here. The",
+        "arbiter saves and restores each slot by index, so a wrong number silently",
+        "leaves the extra slots cold. Set it to 0 to turn KV persistence off.",
+        "Requires llama-server to be started with --slot-save-path DIR; without that",
+        "flag /slots/{id}?action=save answers 400 and save_kv reports 'unsupported'.",
+        "Measured here with -c 131072: a 3926-token slot saved in 82 ms and the file",
+        "was ~330 MiB, of which ~190 MiB is context checkpoints rather than KV; the",
+        "marginal KV cost is ~20 KiB/token, so a full slot projects to ~2.5 GiB and",
+        "four to ~10 GiB. Files are overwritten on every save, so that is a ceiling,",
+        "not growth -- but put the directory somewhere with room for it."
       ]
     },
 

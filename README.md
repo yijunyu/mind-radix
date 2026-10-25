@@ -85,7 +85,10 @@ endpoint in front of all of them and swaps on demand:
   fit together stay up;
 * **it keeps per-model prompt caches across a swap.** `ds4-server` persists KV on a
   policy with `--kv-disk-dir`; `llama-server` needs `--slot-save-path` plus explicit
-  `/slots/{id}?action=save|restore`, which the arbiter calls around the swap;
+  `/slots/{id}?action=save|restore`, which the arbiter calls around the swap. Measured
+  on the gfx1151 box: a 3,926-token prompt costs **3,029 ms** to prefill cold, and
+  after a full stop/start with KV persisted the same prefix re-entered the engine as
+  **4 tokens in 56 ms**. Saving all four slots took 82 ms;
 * **it advertises unloaded models.** `GET /v1/models` lists the whole registry with a
   `loaded` flag, so a client can see its choices while nothing is serving and pick
   one; asking for an unloaded model loads it.
@@ -114,7 +117,11 @@ curl -XPOST -H "Authorization: Bearer $KEY" localhost:8010/arbiter/pin/minicpm  
 ```
 
 Measured here: unload MiniCPM, then one chat request reloaded it and answered in
-**4.19 s** end to end, reporting `x-mind-arbiter: loaded`.
+**4.19 s** end to end, reporting `x-mind-arbiter: loaded`. With `--slot-save-path` on
+the engine and `slots` set to its `total_slots`, that reload also brought the prompt
+cache back — the long prefix that cost 3 s to prefill came back as 4 tokens. Note that
+`--parallel` defaults to *auto*, which chose 4 slots here, not 1: `slots` must match
+`total_slots` from `/props` or the extra slots are silently left cold.
 
 What it cannot do is make a swap instant. Three things must come back and only two
 can be saved: KV state persists to disk, weights reload in seconds and not reliably
