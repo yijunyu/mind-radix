@@ -45,7 +45,15 @@ unchanged. Only `sha2` is a dependency: no engine bindings, no transport.
   needed;
 * a new conversation is ranked by the index when it recognises the opening, otherwise
   it takes the fastest healthy backend;
-* a backend that is down or 5xx-ing is replaced and the conversation follows.
+* a backend that is down or 5xx-ing is replaced and the conversation follows;
+* a request that names a model only considers backends that claim it, learned from the
+  `/v1/models` listing each health probe already fetches. Hosts were interchangeable
+  while they all ran one model; a host running the arbiter offers a choice, so this is
+  now the difference between a slow answer and a wrong one. Capability is checked
+  *before* affinity, or a conversation would keep returning to a host that no longer
+  holds what it is asking for. Narrowing happens only when some healthy backend claims
+  the name — a backend that ignores the `model` field advertises nothing, and reading
+  that as "cannot serve it" would route nowhere.
 
 Every reply carries `x-mind-backend` (which host answered) and `x-mind-route` (why).
 Binds the LAN by default and **requires an API key**, so an open router is never
@@ -83,11 +91,17 @@ endpoint in front of all of them and swaps on demand:
   one; asking for an unloaded model loads it.
 
 Every reply carries `x-mind-model` and `x-mind-arbiter` (`resident`, `loaded`,
-`loaded-evicted:<id>(<kv>)`, …), so a slow first request is explainable.
+`loaded-evicted:<id>(<kv>)`, …), and the router passes both through, so a first
+request that took seconds still says why.
 
 Composition is the point: set `MIND_AMD=http://127.0.0.1:8010` and the router needs
 no change at all — it keeps ranking hosts by prefix, and the host it picks now
-happens to offer a choice of models.
+happens to offer a choice of models. Two optional settings close the loop between
+them: `MIND_ARBITER_ROUTER` and `MIND_ARBITER_ROUTER_BACKEND` let the arbiter call
+`POST /router/forget/<backend>` after a swap, because a swap is a backend restart as
+far as a prefix index can tell. That drops the index's estimates for the host and not
+its affinity — a conversation is keyed on its model, so letting it come back to the
+same host is exactly what makes a swap *back* cheap.
 
 ```bash
 cp models.example.json ~/.config/mind/models.json   # then edit; never put a key in it
@@ -148,15 +162,21 @@ local instead of always crossing the network to a router that cannot see it.
 * Tokens are hashed from message text, not a real tokenizer (the router has none). That
   is enough to decide whether two requests share an opening; it is an approximation of
   the engine's own prefix matching, not a replacement.
-* A backend restart loses its cache; call `forget_backend` or `POST /router/session/clear`.
-  An arbiter swap *is* such a restart as far as the router can tell, and the arbiter
-  does not yet notify it — so with both running, a model swap leaves the router's
-  index briefly optimistic about that backend. The index only corrects estimates
-  downward from measurement, so this self-heals after a turn or two; wiring the
-  arbiter to call `forget_backend` on a swap is the clean fix and is not done yet.
-  A related subtlety: the index keys on message text and not on the model, so two
-  models behind one backend name share estimates. Affinity is unaffected — a
-  conversation key already includes `model`.
+* A backend restart loses its cache; call `POST /router/forget/<backend>` (or
+  `/router/session/clear` to drop affinity as well). An arbiter swap *is* such a
+  restart as far as the router can tell, and the arbiter now notifies it when
+  `MIND_ARBITER_ROUTER` is set — best-effort and in a background thread, since the
+  swap has already happened and a failed notification self-heals: the index only ever
+  corrects an estimate downward from measurement. A related subtlety the notification
+  does *not* fix: the index keys on message text and not on the model, so two models
+  behind one backend name share estimates. Affinity is unaffected — a conversation
+  key already includes `model`.
+* Model names must agree across hosts, now that they are routed on. The same model
+  advertised as `minicpm-v4.7` by one host and `minicpm-v4.7-35b-a3b-q4km` by another
+  looks like two models, and a request using the first spelling will skip the second
+  host even when it could serve it faster. Alias lists are the fix, which the arbiter
+  publishes in its own `/v1/models`; a plain `llama-server` backend cannot, so give it
+  the spelling its clients use.
 * No engine-side event stream exists for llama.cpp, so estimates are built from prompts
   the router sent. Precise routing would need llama.cpp to emit KV events; the hash
   chain here is the prerequisite for that and is already written.

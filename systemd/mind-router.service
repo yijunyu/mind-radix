@@ -9,11 +9,17 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h
 # MIND_STUDIO points at the other host's router, which fronts its own backend;
-# MIND_AMD is this host's local backend.
+# MIND_AMD is this host's local backend -- mind-arbiter on 8010 rather than a single
+# model's server on 8000, so this host offers a choice of models and the router keeps
+# doing nothing but prefix-aware host ranking.
 Environment=MIND_ROUTER_HOST=0.0.0.0
 Environment=MIND_ROUTER_PORT=8015
 Environment=MIND_STUDIO=http://192.168.1.92:8015
-Environment=MIND_AMD=http://127.0.0.1:8000
+Environment=MIND_AMD=http://127.0.0.1:8010
+# The mac backend is reached through an SSH forward that studio keeps open; this host
+# has no such forward, and an empty value drops the backend entirely rather than
+# leaving a configured one to fail every probe.
+Environment=MIND_MAC=
 Environment=MIND_RADIX_BIN=%h/mind-radix-cli
 EnvironmentFile=-%h/.local/state/ds4-local/mind-router.env
 ExecStart=/usr/bin/python3 %h/mind-router.py

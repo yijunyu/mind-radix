@@ -9,7 +9,11 @@ that matters is *affinity*, not fairness:
   * a conversation stays on the backend that served its previous turn, because that
     is where its prefix is warm;
   * a new conversation prefers studio, then amd;
-  * a backend that is down or 5xx-ing is replaced, and the conversation moves with it.
+  * a backend that is down or 5xx-ing is replaced, and the conversation moves with it;
+  * a request that names a model only considers backends that claim it. Hosts used to
+    be interchangeable because they all ran the same model; a host running
+    mind-arbiter offers a choice, so sending "deepseek-v4.1-flash" to a host that has
+    never heard of it is now a real way to get a wrong answer instead of a slow one.
 
 Switching backends mid-conversation throws away the prefix (measured: the whole tail
 is re-prefilled, ~5.2 s on a 7K prompt), so affinity is worth more than balancing.
@@ -19,6 +23,7 @@ Endpoints:
   GET  /router/status              preference, per-backend health, and affinity table
   POST /router/prefer/<name>|auto  pin one backend, or restore affinity routing
   POST /router/session/clear       drop all affinity (e.g. after a backend restart)
+  POST /router/forget/<name>       that backend's cache is gone; drop its estimates
 
 Binds the LAN by default, so it authenticates: MIND_ROUTER_KEY gates every request.
 """
@@ -94,6 +99,10 @@ NAMES = [b["name"] for b in BACKENDS]
 
 _lock = threading.Lock()
 _health: dict[str, tuple[bool, float]] = dict.fromkeys(NAMES, (False, 0.0))
+# Backend name -> the model names it says it can serve, learned from the same
+# /v1/models call that probes its health. Empty means "it told us nothing we could
+# parse", which is treated as "no claim" and never as "cannot serve it".
+_models: dict[str, frozenset[str]] = dict.fromkeys(NAMES, frozenset())
 # conversation key -> (backend name, last seen). A conversation is identified by the
 # earliest messages it sends, so a client needs no cooperation to be recognised.
 _affinity: dict[str, tuple[str, float]] = {}
@@ -168,6 +177,36 @@ def headers_for(backend: dict, extra: dict | None = None) -> dict:
     return headers
 
 
+def _advertised(payload: bytes) -> frozenset[str]:
+    """The model names in a /v1/models reply, from whichever shape it used.
+
+    Three shapes turn up among the backends here, so the parser accepts all of them
+    rather than assuming the host is an OpenAI-compatible engine: OpenAI's own
+    ``{"data": [{"id": ...}]}``, the Ollama-style ``{"models": [{"name": ...}]}`` that
+    one backend on this LAN answers with, and the arbiter's, which is OpenAI's plus an
+    ``aliases`` list. Anything unparseable yields an empty set, which callers read as
+    "this backend made no claim".
+    """
+    names: set[str] = set()
+    try:
+        doc = json.loads(payload)
+    except (ValueError, TypeError):
+        return frozenset()
+    if not isinstance(doc, dict):
+        return frozenset()
+    for entry in (doc.get("data") or []) + (doc.get("models") or []):
+        if not isinstance(entry, dict):
+            continue
+        for field in ("id", "name", "model"):
+            value = entry.get(field)
+            if isinstance(value, str) and value.strip():
+                names.add(value.strip().lower())
+        for alias in entry.get("aliases") or []:
+            if isinstance(alias, str) and alias.strip():
+                names.add(alias.strip().lower())
+    return frozenset(names)
+
+
 def probe(backend: dict) -> bool:
     """Cached reachability check; free, so it can be called on every request."""
     name = backend["name"]
@@ -175,6 +214,7 @@ def probe(backend: dict) -> bool:
         ok, at = _health[name]
         if time.time() - at <= PROBE_TTL:
             return ok
+    names: frozenset[str] = frozenset()
     try:
         # The URL is built from this process's own configuration, never from a client
         # request, so the scheme is ours to trust (noqa: the audit assumes user input).
@@ -182,10 +222,20 @@ def probe(backend: dict) -> bool:
                                      headers=headers_for(backend))
         with urllib.request.urlopen(req, timeout=4) as resp:  # noqa: S310
             ok = 200 <= resp.status < 300
+            if ok:
+                # The body was already being fetched and thrown away; a model listing
+                # is small, but cap the read so a misbehaving backend cannot make a
+                # health probe expensive.
+                names = _advertised(resp.read(262144))
     except Exception:
         ok = False
     with _lock:
         _health[name] = (ok, time.time())
+        if ok:
+            # Only replace the claim on a successful probe: a backend that is briefly
+            # unreachable has not stopped serving what it served a moment ago, and it
+            # is excluded from routing by its health anyway.
+            _models[name] = names
     return ok
 
 
@@ -249,6 +299,20 @@ def choose(body: dict) -> tuple[dict | None, str]:
     if not healthy:
         return None, "none-healthy"
 
+    # Which backends can serve the model that was asked for. This mattered not at all
+    # while every host ran the same model, and matters now: a host running an arbiter
+    # offers a choice, so "amd" and "studio" are no longer interchangeable for a
+    # request that names one. Narrow only when some healthy backend claims the name --
+    # a backend that ignores the model field, or whose listing could not be parsed,
+    # advertises nothing, and reading that as "cannot serve it" would route nowhere.
+    want = str(body.get("model") or "").strip().lower()
+    suffix = ""
+    if want:
+        with _lock:
+            able = [b for b in healthy if want in _models.get(b["name"], frozenset())]
+        if able and len(able) < len(healthy):
+            healthy, suffix = able, "+model"
+
     if key:
         with _lock:
             now = time.time()
@@ -256,7 +320,7 @@ def choose(body: dict) -> tuple[dict | None, str]:
             held = _affinity.get(key)
             if held and held[0] in [b["name"] for b in healthy]:
                 _affinity[key] = (held[0], now)
-                return by_name[held[0]], f"affinity:{held[0]}"
+                return by_name[held[0]], f"affinity:{held[0]}{suffix}"
 
     # No affinity yet. If the index knows this prompt, send it where the prefix most
     # likely still lives; otherwise take the first healthy backend (studio, the
@@ -267,10 +331,10 @@ def choose(body: dict) -> tuple[dict | None, str]:
         best = next((e for e in ranked if e.get("cached_tokens", 0) > 0
                      and e.get("backend") in [b["name"] for b in healthy]), None)
         if best is not None:
-            return by_name[best["backend"]], f"prefix:{best['backend']}:{best['cached_tokens']}"
+            return by_name[best["backend"]], f"prefix:{best['backend']}:{best['cached_tokens']}{suffix}"
     if key:
-        return healthy[0], f"new:{healthy[0]['name']}"
-    return healthy[0], f"nokey:{healthy[0]['name']}"
+        return healthy[0], f"new:{healthy[0]['name']}{suffix}"
+    return healthy[0], f"nokey:{healthy[0]['name']}{suffix}"
 
 
 def _hashable_tokens(body: dict) -> list:
@@ -354,7 +418,9 @@ class Handler(BaseHTTPRequestHandler):
                 "preferred": preferred,
                 "affinity_ttl_s": AFFINITY_TTL,
                 "conversations": len(affinity),
-                "backends": [{"name": b["name"], "base": b["base"], "healthy": probe(b)} for b in BACKENDS],
+                "backends": [{"name": b["name"], "base": b["base"], "healthy": probe(b),
+                              "models": sorted(_models.get(b["name"], frozenset()))}
+                             for b in BACKENDS],
             })
         return self.forward("GET")
 
@@ -373,6 +439,23 @@ class Handler(BaseHTTPRequestHandler):
                 dropped = len(_affinity)
                 _affinity.clear()
             return self._json(200, {"cleared": dropped})
+        if self.path.startswith("/router/forget/"):
+            # "That backend's cache is gone." Called by a restart hook, or by an
+            # arbiter that just swapped a model out from under this name. Only the
+            # prefix index is dropped, never affinity: a conversation's affinity is
+            # keyed on its model, so letting it return to the same host is what makes
+            # a swap *back* cheap -- the arbiter reloads that model and, where KV was
+            # persisted, its prefix is warm again. Forgetting the index is the
+            # pessimistic half, and pessimism is the safe direction here, since the
+            # index only ever corrects an estimate downward from measurement.
+            want = self.path.rsplit("/", 1)[-1]
+            if want not in NAMES:
+                return self._json(400, {"error": f"unknown backend {want!r}"})
+            INDEX.call({"op": "forget_backend", "backend": want})
+            with _lock:
+                _models[want] = frozenset()   # re-learned on the next probe
+                _health[want] = (False, 0.0)  # force that probe now
+            return self._json(200, {"forgot": want})
         return self.forward("POST")
 
     def forward(self, method: str) -> None:
@@ -438,6 +521,14 @@ class Handler(BaseHTTPRequestHandler):
         # reuse figure, so a later estimate can be corrected by measurement.
         self.send_response(resp.status)
         self.send_header("Content-Type", resp.headers.get("Content-Type", "application/json"))
+        # Pass through whatever the backend said about itself. When the backend is an
+        # arbiter, its x-mind-arbiter header is the only account of why a first request
+        # took seconds -- a model was swapped in -- and rebuilding the response here
+        # used to drop it, leaving a client with a slow reply and no explanation.
+        for header in ("x-mind-model", "x-mind-arbiter"):
+            value = resp.headers.get(header)
+            if value:
+                self.send_header(header, value)
         self.send_header("x-mind-backend", backend["name"])
         self.send_header("x-mind-route", why)
         self.send_header("Connection", "close")

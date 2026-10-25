@@ -46,6 +46,11 @@ Endpoints:
 
 Binds loopback by default: the thing in front of it (mind-router) is what faces a LAN
 and authenticates. Set MIND_ARBITER_KEY to require a key here too.
+
+Set MIND_ARBITER_ROUTER and MIND_ARBITER_ROUTER_BACKEND to let the arbiter tell that
+router when a swap has thrown away this host's prompt cache; the router's prefix
+estimates are otherwise left briefly optimistic about a backend whose engine it does
+not know was restarted.
 """
 from __future__ import annotations
 
@@ -407,9 +412,50 @@ def ensure(target) -> tuple[bool, str]:
         if evicted:
             why += "-evicted:" + ",".join(evicted)
         LOG(f"{target.id}: {why}; kv {restored}")
+        if evicted:
+            # Only when something was actually stopped. Loading into free memory
+            # leaves the other models' caches intact, so there is nothing to forget.
+            _notify_router_forget(f"swap-to:{target.id}")
         return True, why
     finally:
         _swap_lock.release()
+
+
+ROUTER_BASE = os.environ.get("MIND_ARBITER_ROUTER", "").strip().rstrip("/")
+# The name the router in front of this arbiter uses for this host. The arbiter cannot
+# infer it -- the router's backend names are that router's own configuration -- so a
+# notification needs it spelled out, and without it nothing is sent.
+ROUTER_BACKEND = os.environ.get("MIND_ARBITER_ROUTER_BACKEND", "").strip()
+# Defaults to the key this arbiter accepts, because on a single host the router and
+# the arbiter are normally gated by the same LAN key; set it only when they differ.
+ROUTER_KEY = os.environ.get("MIND_ARBITER_ROUTER_KEY", "").strip() or AUTH_KEY
+
+
+def _notify_router_forget(why: str) -> None:
+    """Tell the router in front of us that this host's prompt cache just died.
+
+    A swap is a backend restart as far as a prefix index can tell: the engine that
+    held those prefixes is gone. The router corrects its own estimates downward from
+    measurement, so a missed notification self-heals after a turn or two -- which is
+    why this is strictly best-effort and never allowed to fail or delay a swap. It is
+    also deliberately fire-and-forget rather than checked: the swap has already
+    happened by the time this runs, so there is nothing a failure could undo.
+    """
+    if not ROUTER_BASE or not ROUTER_BACKEND:
+        return
+
+    def send() -> None:
+        try:
+            req = urllib.request.Request(  # noqa: S310
+                f"{ROUTER_BASE}/router/forget/{ROUTER_BACKEND}", data=b"", method="POST",
+                headers={"Authorization": f"Bearer {ROUTER_KEY}"} if ROUTER_KEY else {})
+            with urllib.request.urlopen(req, timeout=4):  # noqa: S310
+                pass
+            LOG(f"router: forget {ROUTER_BACKEND} ({why})")
+        except Exception as exc:  # noqa: BLE001 - best effort by design
+            LOG(f"router: forget {ROUTER_BACKEND} failed: {type(exc).__name__}")
+
+    threading.Thread(target=send, daemon=True).start()
 
 
 def client_key(headers) -> str:
@@ -466,9 +512,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.rstrip("/") == "/v1/models":
             # Every registered model, loaded or not. This is what lets a client see
             # its options while nothing is serving and then ask for one by name.
+            # Aliases are published too, because this process is the authority on what
+            # names it answers to: a router in front of it has to be able to tell that
+            # a request for "minicpm" is a request for minicpm-v4.7, and asking it to
+            # re-derive that from a registry it cannot read would duplicate the table.
             return self._json(200, {"object": "list", "data": [
                 {"id": m.id, "object": "model", "owned_by": "local",
-                 "loaded": m.healthy(), "opt_in": m.opt_in} for m in MODELS]})
+                 "aliases": sorted(m.aliases), "loaded": m.healthy(),
+                 "opt_in": m.opt_in} for m in MODELS]})
         return self.forward("GET")
 
     def do_POST(self):  # noqa: N802 - stdlib name
@@ -497,6 +548,7 @@ class Handler(BaseHTTPRequestHandler):
                                         "inflight": model.inflight})
             note = model.save_kv()
             model.stop()
+            _notify_router_forget(f"unload:{model.id}")
             return self._json(200, {"model": model.id, "stopped": True, "kv": note})
         return self.forward("POST")
 

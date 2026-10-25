@@ -14,6 +14,11 @@ WorkingDirectory=%h
 Environment=MIND_ARBITER_HOST=127.0.0.1
 Environment=MIND_ARBITER_PORT=8010
 Environment=MIND_ARBITER_MODELS=%h/.config/mind/models.json
+# Where to say "this host's prompt cache is gone" after a swap, and the name that
+# router knows this host by -- the arbiter cannot infer it, since backend names are
+# the router's own configuration. Both must be set or nothing is sent.
+Environment=MIND_ARBITER_ROUTER=http://127.0.0.1:8015
+Environment=MIND_ARBITER_ROUTER_BACKEND=amd
 # Leave this much of the pool unused when deciding whether a model fits. A sweep on
 # the gfx1151 box was killed at MemAvailable < 3 GiB while its own plan said it fit,
 # so the guard is deliberately loose.
