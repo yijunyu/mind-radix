@@ -66,6 +66,38 @@
     },
 
     {
+      "id": "nanbeige4.3-33b",
+      "aliases": ["nanbeige", "nanbeige4.3"],
+      "engine": "llama.cpp",
+      "launcher": "systemd",
+      "unit": "ds4-nanbeige-vulkan.service",
+      "base": "http://127.0.0.1:8003",
+      "key_env": "DS4_LAN_API_KEY",
+      "key_env_file": "~/.local/state/ds4-local/lan-service.env",
+      "weight_gib": 36,
+      "ready_timeout_s": 300,
+      "slots": 2,
+      "opt_in": true,
+      "_note": [
+        "A dense 33.1B whose KV is 208 KiB/token (52 layers x 8 KV heads x 128, f16),",
+        "about ten times MiniCPM's measured ~20 KiB. So the context, not the weights,",
+        "is what sizes it: Q4_K_M is 19.4 GiB, but the advertised 524288-token context",
+        "would want 104 GiB of KV and does not fit the pool. The unit runs -c 65536,",
+        "and measured here that is 33.1 GiB of the pool, so weight_gib 36 leaves a",
+        "small margin. Small enough that this is the first model on this box that can",
+        "be resident beside MiniCPM instead of evicting it -- verified, both active",
+        "with 55.5 GiB still available.",
+        "A saved slot measured 877 MiB for 4113 tokens, i.e. 218 KiB/token including",
+        "context checkpoints, which confirms the figure above; a full 32768-token slot",
+        "projects to ~6.5 GiB and the pair to ~13 GiB on --slot-save-path. Measured",
+        "round trip: 13954 ms of prefill came back as 109 ms, save 2/2 in 1 s, reload",
+        "in 8 s. Decode is 10.2 tok/s against MiniCPM's 68.6 -- it is dense, so every",
+        "token reads all 19.4 GiB, where MiniCPM activates ~3B of its 35B.",
+        "opt_in because its benchmark claims are the vendor's own and unreplicated."
+      ]
+    },
+
+    {
       "id": "qwen3.8-flash-next",
       "aliases": ["qwen38"],
       "engine": "ds4",
