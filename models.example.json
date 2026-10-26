@@ -102,6 +102,12 @@
         "43 tokens reports 109.6 tok/s, which is latency and not comparable to a",
         "pp2048 figure. A sweep of -ub 512/1024/2048 gave 281/285/288 tok/s, so the",
         "batch settings inherited from the MiniCPM unit make no difference here.",
+        "Decode reaches 37.9 tok/s on an edit-this-file prompt because the unit runs",
+        "--spec-type ngram-simple: 3.7x, with 249 of 249 drafted tokens accepted. That",
+        "is the only lever that matters here -- plain decode moves 202 GB/s of a ~256",
+        "GB/s pool, so no engine reading these weights one token at a time can be much",
+        "quicker, which is why the engine stays llama.cpp. The flag costs bit-exact",
+        "reproducibility on free prose; see the unit for the measurement.",
         "opt_in because its benchmark claims are the vendor's own and unreplicated."
       ]
     },
