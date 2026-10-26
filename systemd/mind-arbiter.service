@@ -24,7 +24,10 @@ Environment=MIND_ARBITER_ROUTER_BACKEND=amd
 # so the guard is deliberately loose.
 Environment=MIND_ARBITER_RESERVE_GIB=8
 EnvironmentFile=-%h/.local/state/ds4-local/mind-arbiter.env
-ExecStart=/usr/bin/python3 %h/mind-arbiter.py
+# The Rust build (cargo build --release, then install target/release/mind-arbiter
+# as %h/mind-arbiter). Configuration is entirely environmental, exactly as the
+# Python it replaced, so this unit changed only on this line.
+ExecStart=%h/mind-arbiter
 Restart=always
 RestartSec=5
 

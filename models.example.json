@@ -1,6 +1,6 @@
 {
   "_about": [
-    "Registry for mind-arbiter.py. Copy to ~/.config/mind/models.json and edit.",
+    "Registry for mind-arbiter. Copy to ~/.config/mind/models.json and edit.",
     "Never put an API key here: name where it lives with key_env / key_env_file.",
     "weight_gib is what the model needs resident, including KV and, for a streaming",
     "model, its expert cache. The arbiter evicts others only until that much is free,",

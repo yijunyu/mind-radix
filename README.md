@@ -156,10 +156,9 @@ GiB of re-reads. Mark such a model `opt_in` so it stays out of casual routing.
 | `tests/arbiter_spec.rs` | swap, eviction and registry rules (§3), against a fake machine |
 | `tests/service_spec.rs` | the wire: headers, status codes, streaming, fake engines on real sockets |
 | `models.example.json` | arbiter registry template |
-| `mind-router.sh` | start/stop/status helper |
+| `mind-router.sh` | start/stop/status helper, for a host without systemd |
 | `systemd/mind-router.service` | Linux user unit |
 | `systemd/mind-arbiter.service` | Linux user unit for the arbiter |
-| `mind-router.py`, `mind-arbiter.py` | the previous implementation, kept only until the live units run the binaries |
 
 ## Use
 

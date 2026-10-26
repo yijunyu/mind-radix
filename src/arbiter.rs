@@ -979,15 +979,25 @@ impl Host for SystemHost {
 
 fn log_line(message: &str) {
     use std::io::Write;
-    // Seconds since the epoch rather than a formatted clock: date formatting is not
-    // worth a dependency, and journald already timestamps every line.
-    let now = std::time::SystemTime::now()
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "[mind-arbiter] {} {message}", clock());
+    let _ = out.flush();
+}
+
+/// Wall-clock time of day as `HH:MM:SSZ`.
+///
+/// UTC, and marked as such. A date library is not worth a dependency for one line of
+/// log, but raw epoch seconds are not something anyone can read while watching a swap,
+/// and silently printing UTC as if it were local time is worse than either — the two
+/// differ by an hour here for half the year, which is exactly the kind of thing that
+/// wastes an afternoon when correlating a log against a journal.
+fn clock() -> String {
+    let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "[mind-arbiter] t={now} {message}");
-    let _ = out.flush();
+    let day = secs % 86_400;
+    format!("{:02}:{:02}:{:02}Z", day / 3600, (day % 3600) / 60, day % 60)
 }
 
 /// Read configuration from the environment, matching the names the unit already uses.

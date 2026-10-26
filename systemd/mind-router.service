@@ -20,9 +20,11 @@ Environment=MIND_AMD=http://127.0.0.1:8010
 # has no such forward, and an empty value drops the backend entirely rather than
 # leaving a configured one to fail every probe.
 Environment=MIND_MAC=
-Environment=MIND_RADIX_BIN=%h/mind-radix-cli
 EnvironmentFile=-%h/.local/state/ds4-local/mind-router.env
-ExecStart=/usr/bin/python3 %h/mind-router.py
+# The Rust build (install target/release/mind-router as %h/mind-router). MIND_RADIX_BIN
+# is gone with it: the prefix index now lives in this process instead of in a child
+# reached over a pipe, so there is no separate binary to point at or to lose.
+ExecStart=%h/mind-router
 Restart=always
 RestartSec=5
 
