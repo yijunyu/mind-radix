@@ -222,6 +222,48 @@ fn an_empty_or_malformed_registry_is_an_error_not_a_panic() {
     assert!(parse_registry(&json!(42)).is_err());
 }
 
+/// The template people copy is held to the rules it is a template for: A-2 (it names
+/// where a key lives and never carries one), A-6 (a request naming no model has a
+/// default to land on) and unambiguous names, since `resolve` takes the first match and
+/// a repeated alias would silently shadow a later entry. Nothing parsed this file
+/// before, so a comma lost while editing its notes would have shipped.
+#[test]
+fn the_shipped_registry_template_is_valid_and_unambiguous() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/models.example.json");
+    let text = std::fs::read_to_string(path).expect("models.example.json is readable");
+    let doc: serde_json::Value = serde_json::from_str(&text).expect("it is valid JSON");
+    let models = parse_registry(&doc).expect("it parses as a registry");
+
+    assert!(models.iter().any(|m| !m.opt_in), "A-6: some entry is the default");
+
+    for m in &models {
+        assert!(!m.base.is_empty(), "{}: an entry needs a base to reach", m.id);
+        if m.external() {
+            assert_eq!(m.weight_gib, 0.0, "A-4: {} is external and costs no local memory", m.id);
+        } else {
+            assert!(m.weight_gib > 0.0, "A-3: {} is judged against this number", m.id);
+        }
+        // A-2: a key_env names a variable; it must not be the value itself. Anything
+        // long, mixed-case or punctuated is a key that slipped in rather than a name.
+        if let Some(name) = m.key_env.as_deref() {
+            assert!(
+                name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'),
+                "A-2: {} key_env {name:?} is not a variable name",
+                m.id
+            );
+        }
+    }
+
+    let mut seen = std::collections::HashMap::new();
+    for m in &models {
+        for name in std::iter::once(&m.id).chain(m.aliases.iter()) {
+            if let Some(first) = seen.insert(name.clone(), m.id.clone()) {
+                panic!("{name:?} is claimed by both {first:?} and {:?}", m.id);
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------- residency
 
 /// A-7: already resident means no swap at all.

@@ -113,7 +113,7 @@ On a unified-memory box the models do not fit together: MiniCPM-V 4.7 needs ~35 
 | **A-17** | `slots` MUST equal the engine's `total_slots` from `/props`. `--parallel` defaults to *auto*, which chose **4** on this box, not 1 — a plausible-but-wrong value silently leaves the other slots cold. |
 | **A-18** | **Restoring a slot that was never saved MUST be reported as `cold`, not as a failure.** llama-server answers 400 with the same message it uses for a corrupt file, so counting non-2xx as failure makes every first swap-in look broken. |
 | **A-19** | `slots: 0` MUST disable KV persistence and report `unsupported` rather than failing every swap. |
-| **A-20** | KV files MUST be named per model and slot and overwritten in place, so disk use is bounded by slot count. Measured: a 3,926-token slot wrote ~330 MiB, of which ~190 MiB is context checkpoints; marginal KV ~20 KiB/token, so four full 131072-token slots project to ~10 GiB. |
+| **A-20** | KV files MUST be named per model and slot and overwritten in place, so disk use is bounded by slot count. Measured on MiniCPM-V 4.7: a 3,926-token slot wrote ~330 MiB, of which ~190 MiB is context checkpoints; marginal KV ~20 KiB/token, so four full 131072-token slots project to ~10 GiB. **That rate is the model's attention shape, not a constant of this design**, and the bound is only as good as the registry's `slots`: Nanbeige4.3-33B measured 110.6 KiB/token with a `q8_0` cache and 208 KiB/token at f16, ten times MiniCPM's, so two full 65536-token slots project to ~14 GiB. Size a `--slot-save-path` from the model in hand. |
 
 ### 3.4 Serving
 
