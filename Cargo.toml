@@ -10,5 +10,11 @@ license = "MIT OR Apache-2.0"
 # engine bindings and talks to no transport, so it can sit in front of llama.cpp,
 # PolyStrata, or anything else that caches prompt prefixes by longest-common-prefix.
 sha2 = "0.10"
+# JSON only. The router and arbiter must read client request bodies -- nested message
+# arrays, content parts, model names -- which is past what the substring reader in
+# mind-radix-cli can do honestly. No HTTP crate: src/http.rs is enough HTTP/1.1 for a
+# JSON and SSE reverse proxy on a trusted network (see SPEC.md N-1).
+serde_json = "1"
 
 [dev-dependencies]
+

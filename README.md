@@ -24,7 +24,18 @@ There are two consequences, and this crate addresses both:
 2. **Routing must be sticky.** Switching backends mid-conversation throws the prefix
    away, so per-conversation affinity is worth more than fairness.
 
-## Two pieces
+## Three pieces, one crate
+
+Everything is Rust now. The index was always a crate; the router and the arbiter were
+stdlib Python until they were ported, which bought three things worth the rewrite: the
+index moved in-process so routing no longer speaks to a child over a pipe, in-flight
+accounting became a drop guard rather than a `finally` (a leaked count makes a model
+permanently unswappable), and the decisions became unit-testable — **91 tests**, where
+the swap and eviction rules previously could only be checked by evicting a 35 GiB model
+on the real box.
+
+`SPEC.md` is normative for all three and gives every requirement an id; the tests name
+those ids, so a failure says which rule broke rather than which line.
 
 **`src/lib.rs` — the index.** vLLM-style chained block hashes
 (`h_i = H(h_{i-1} ‖ block_i)`), so a block's identity depends on everything before it
@@ -38,7 +49,7 @@ This is also the exact value Dynamo's KV router consumes as
 `ExternalSequenceBlockHash`, so an engine-side integration later can emit these hashes
 unchanged. Only `sha2` is a dependency: no engine bindings, no transport.
 
-**`mind-router.py` — the router.** One endpoint in front of two backends:
+**`src/router.rs` — the router.** One endpoint in front of several backends:
 
 * a conversation stays on the backend that served its previous turn (prefix affinity),
   keyed on model + system prompt + first user message, so no client cooperation is
@@ -57,10 +68,11 @@ unchanged. Only `sha2` is a dependency: no engine bindings, no transport.
 
 Every reply carries `x-mind-backend` (which host answered) and `x-mind-route` (why).
 Binds the LAN by default and **requires an API key**, so an open router is never
-mistaken for an open model. If the index binary is missing or dies, routing degrades to
-affinity alone — the index improves routing and is never required for it.
+mistaken for an open model. [`router::choose`] is a pure function over a snapshot of
+health, claims, affinity and estimates, which is why all of §2 of the spec can be
+tested without a socket or a model.
 
-## Choosing a model, not just a host: `mind-arbiter.py`
+## Choosing a model, not just a host: `src/arbiter.rs`
 
 The router answers *which host*, because every host serves the same model. The
 arbiter answers *which model this host is currently holding*, which is a different
@@ -108,7 +120,7 @@ same host is exactly what makes a swap *back* cheap.
 
 ```bash
 cp models.example.json ~/.config/mind/models.json   # then edit; never put a key in it
-python3 mind-arbiter.py
+cargo build --release && ./target/release/mind-arbiter
 
 curl -H "Authorization: Bearer $KEY" localhost:8010/v1/models        # choices
 curl -H "Authorization: Bearer $KEY" localhost:8010/arbiter/status   # residency + headroom
@@ -134,18 +146,25 @@ GiB of re-reads. Mark such a model `opt_in` so it stays out of casual routing.
 | Path | What |
 | --- | --- |
 | `src/lib.rs` | hashing + radix tree + estimates |
-| `src/bin/mind-radix-cli.rs` | line-oriented JSON CLI, so the router needs no binding layer |
-| `mind-router.py` | the router (stdlib only, Python 3.9+) |
-| `mind-arbiter.py` | local model arbitration and swapping (stdlib only) |
+| `src/http.rs` | enough HTTP/1.1 for a JSON and SSE reverse proxy, in the standard library |
+| `src/router.rs` | prefix- and model-aware host routing |
+| `src/arbiter.rs` | local model arbitration and swapping |
+| `src/bin/mind-router.rs`, `src/bin/mind-arbiter.rs` | the two services |
+| `src/bin/mind-radix-cli.rs` | line-oriented JSON CLI over the index alone |
+| `SPEC.md` | normative behaviour, one id per requirement |
+| `tests/router_spec.rs` | routing decisions (§2) |
+| `tests/arbiter_spec.rs` | swap, eviction and registry rules (§3), against a fake machine |
+| `tests/service_spec.rs` | the wire: headers, status codes, streaming, fake engines on real sockets |
 | `models.example.json` | arbiter registry template |
 | `mind-router.sh` | start/stop/status helper |
 | `systemd/mind-router.service` | Linux user unit |
 | `systemd/mind-arbiter.service` | Linux user unit for the arbiter |
+| `mind-router.py`, `mind-arbiter.py` | the previous implementation, kept only until the live units run the binaries |
 
 ## Use
 
 ```bash
-cargo test                                  # 17 tests
+cargo test                                  # 91 tests
 cargo build --release
 cargo clippy --all-targets                  # clean
 
@@ -153,10 +172,10 @@ printf '%s\n%s\n' \
   '{"op":"observe","backend":"studio","tokens":[1,2,3],"cached":0,"prompt":3}' \
   '{"op":"estimate","tokens":[1,2,3]}' | ./target/release/mind-radix-cli
 
-# Router: set the backends for THIS host; a backend may be another host's router.
-MIND_STUDIO=http://127.0.0.1:8016 MIND_AMD=http://192.168.1.123:8000 \
-MIND_AMD_KEY=$(cat ~/.ds4-lan-key) MIND_RADIX_BIN=$PWD/target/release/mind-radix-cli \
-  ./mind-router.sh up
+# Router: set the backends for THIS host; a backend may be another host's router,
+# or its arbiter. An empty MIND_<NAME> drops that backend entirely.
+MIND_STUDIO=http://127.0.0.1:8016 MIND_MAC= MIND_AMD=http://127.0.0.1:8010 \
+MIND_AMD_KEY=$(cat ~/.ds4-lan-key) ./target/release/mind-router
 ```
 
 Both hosts run their own router, because a router can only see the caches it has talked

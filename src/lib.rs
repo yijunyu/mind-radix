@@ -28,9 +28,19 @@
 //! tokenizer already exists outside this crate. It also does not verify its estimate
 //! against the engine -- [`PrefixIndex::observe`] does that after the fact.
 
+//! **What else is here.** The index is the original crate and stands alone; alongside
+//! it are the two services that use it, ported from the stdlib-Python originals so the
+//! whole system builds and tests as one unit. [`http`] is the small HTTP/1.1 layer they
+//! share, [`router`] decides which host should serve a request, and [`arbiter`] decides
+//! which model one host holds. `SPEC.md` is normative for all three.
+
 use std::collections::HashMap;
 
 use sha2::{Digest, Sha256};
+
+pub mod arbiter;
+pub mod http;
+pub mod router;
 
 /// A block of token ids, the unit of hashing and caching.
 pub type Block = Vec<u32>;
@@ -306,6 +316,7 @@ mod tests {
         (0..n as u32).collect()
     }
 
+    /// I-1: a block's identity depends on everything before it.
     #[test]
     fn chained_hashes_depend_on_position() {
         let (a, covered) = block_hashes(&toks(32), 16, b"s");
@@ -318,6 +329,7 @@ mod tests {
         assert_ne!(a, b, "same blocks at different positions must differ");
     }
 
+    /// I-1: identical prefixes converge on identical keys.
     #[test]
     fn shared_prefix_produces_shared_hashes() {
         let base = toks(64);
@@ -380,6 +392,7 @@ mod tests {
         assert_eq!(est[0].cached_tokens, 16, "the engine's cache_n wins over the tree");
     }
 
+    /// I-4: an unknown prompt estimates nothing rather than guessing.
     #[test]
     fn unrelated_prompt_estimates_zero() {
         // A prompt with a different opening shares nothing. Note that a *longer*
@@ -402,6 +415,7 @@ mod tests {
         assert_eq!(est[0].shared_blocks, 4);
     }
 
+    /// I-3: forgetting one backend leaves the others untouched.
     #[test]
     fn forget_backend_drops_its_state() {
         let mut index = PrefixIndex::new(16);
