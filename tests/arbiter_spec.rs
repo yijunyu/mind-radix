@@ -264,6 +264,52 @@ fn the_shipped_registry_template_is_valid_and_unambiguous() {
     }
 }
 
+/// A-15/A-16: an entry that claims KV persistence must actually have asked the
+/// engine for it.
+///
+/// Both ways of getting this wrong are silent, which is why they are worth a test
+/// rather than a comment. `save_kv`/`restore_kv` return `automatic` for every `ds4`
+/// engine without looking at argv, so dropping `--kv-disk-dir` leaves the arbiter
+/// reporting success while nothing is written. For a `llama.cpp` engine the failure
+/// hides behind A-18: without `--slot-save-path` every restore comes back non-2xx,
+/// which A-18 deliberately reports as `cold` — the same thing a legitimate first
+/// swap-in reports, so the condition never looks like an error at any point.
+///
+/// This can only check entries that carry their own argv. For a `systemd` launcher
+/// the flag lives in the unit file, which is not in this repo, so `minicpm-v4.7` and
+/// `nanbeige4.3-33b` are out of reach here and were verified against the live box
+/// instead (A-16).
+#[test]
+fn a_registry_entry_that_claims_kv_persistence_asked_the_engine_for_it() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/models.example.json");
+    let text = std::fs::read_to_string(path).expect("models.example.json is readable");
+    let doc: serde_json::Value = serde_json::from_str(&text).expect("it is valid JSON");
+    let models = parse_registry(&doc).expect("it parses as a registry");
+
+    let mut checked = 0;
+    for m in &models {
+        // The arbiter neither starts nor persists for a model it does not own.
+        if m.external() || m.argv.is_empty() {
+            continue;
+        }
+        let flag = if m.engine == "ds4" {
+            "--kv-disk-dir" // A-15
+        } else if m.slots > 0 {
+            "--slot-save-path" // A-16
+        } else {
+            continue; // slots: 0 claims nothing (A-19)
+        };
+        assert!(
+            m.argv.iter().any(|a| a == flag),
+            "{}: engine {:?} reports KV persistence but argv never passes {flag}",
+            m.id,
+            m.engine
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "the template no longer exercises this; the guard would pass vacuously");
+}
+
 // ---------------------------------------------------------------- residency
 
 /// A-7: already resident means no swap at all.
