@@ -86,7 +86,7 @@ On a unified-memory box the models do not fit together: MiniCPM-V 4.7 needs ~35 
 | --- | --- |
 | **A-1** | A model MUST be addressable by its `id` or any of its `aliases`. |
 | **A-2** | The registry MUST NOT contain an API key. It names where one lives (`key_env`, `key_env_file`), and the arbiter resolves it at use. |
-| **A-3** | `weight_gib` is what the model needs resident, including KV and any expert cache. It MUST be the only quantity eviction is judged against. |
+| **A-3** | `weight_gib` is what the model needs resident, including KV and any expert cache. It MUST be the only quantity eviction is judged against. It is **not** the GGUF file size: llama.cpp preallocates the whole `-c` cache at startup, so the context is already in the resident figure and must be declared with it. Nanbeige4.3-33B checks out to the GiB — 19.36 weights + 13.81 KV (131072 × q8_0) + 1.43 compute buffers = 34.60 measured at load, against 36 declared. Declaring the 19.36 file size instead would have let the arbiter admit it beside a model it cannot actually share the box with. |
 | **A-4** | `external: true` MUST mean the arbiter never starts or stops it and never counts it against local memory. |
 | **A-5** | `opt_in: true` MUST keep a model out of the default route; it MUST still be loadable by name. |
 | **A-6** | The default model for a request naming none MUST be the first non-`opt_in` entry. |
@@ -102,14 +102,14 @@ On a unified-memory box the models do not fit together: MiniCPM-V 4.7 needs ~35 
 | **A-11** | Residency changes MUST be serialised, so two requests for two different unloaded models cannot both decide to evict the same third one. |
 | **A-12** | If headroom is still insufficient after evicting everything evictable, the swap MUST fail with `insufficient-memory:…` and MUST NOT start the model. |
 | **A-13** | An unknown `MemAvailable` MUST be treated as no headroom, never as plenty. |
-| **A-14** | After a swap that stopped something, the arbiter SHOULD notify a configured router (`MIND_ARBITER_ROUTER`, `MIND_ARBITER_ROUTER_BACKEND`). It MUST be best-effort: never blocking the swap, never failing it. Loading into free memory harms no other cache and MUST NOT notify. |
+| **A-14** | After a swap that stopped something, the arbiter SHOULD notify a configured router (`MIND_ARBITER_ROUTER`, `MIND_ARBITER_ROUTER_BACKEND`). It MUST be best-effort: never blocking the swap, never failing it. Loading into free memory harms no other cache and MUST NOT notify. Both branches are confirmed live, in one run: admitting Nanbeige4.3-33B (36 GiB) against 81 GiB of headroom left MiniCPM resident and answering and sent no forget, while the explicit unload of the same model sent `forget amd`. |
 
 ### 3.3 KV persistence
 
 | ID | Requirement |
 | --- | --- |
 | **A-15** | A `ds4` engine persists KV on its own policy once `--kv-disk-dir` is set; the arbiter MUST report `automatic` and call nothing. |
-| **A-16** | A `llama.cpp` engine MUST be saved and restored per slot via `POST /slots/{id}?action=save\|restore`, which requires the server to have been started with `--slot-save-path`. |
+| **A-16** | A `llama.cpp` engine MUST be saved and restored per slot via `POST /slots/{id}?action=save\|restore`, which requires the server to have been started with `--slot-save-path`. The round trip is verified end-to-end against the real adapter, not only the test host: on Nanbeige4.3-33B the arbiter logged `kv restore 2/2 ok` on an on-demand load and `save 2/2 ok` on the unload, and the *first* request after the load reported `cached_tokens: 25` of a 40-token prompt. Nothing but the restored slot can supply those tokens, so this is evidence the cache is reused and not merely read back. |
 | **A-17** | `slots` MUST equal the engine's `total_slots` from `/props`. `--parallel` defaults to *auto*, which chose **4** on this box, not 1 — a plausible-but-wrong value silently leaves the other slots cold. |
 | **A-18** | **Restoring a slot that was never saved MUST be reported as `cold`, not as a failure.** llama-server answers 400 with the same message it uses for a corrupt file, so counting non-2xx as failure makes every first swap-in look broken. |
 | **A-19** | `slots: 0` MUST disable KV persistence and report `unsupported` rather than failing every swap. |
